@@ -4,6 +4,10 @@ flags:
     dev: true
 packages:
 - '.'
+- location:
+    git: https://github.com/purescript/purescript
+    commit: ae3aa4d156be23dbb0f1c602ee408af47bb0d141
+  extra-dep: true
 extra-deps:
 - barrier-0.1.1
 - purescript-0.10.5

@@ -98,7 +98,7 @@ packageAsHtml getHtmlCtx pkg@Package{..} =
   HtmlOutput indexFile modules
   where
   linksCtx = getLinksContext pkg
-  indexFile = renderIndex linksCtx
+  indexFile = [] -- renderIndex linksCtx
   modules = map (\m -> moduleAsHtml (getHtmlCtx (modName m)) m) pkgModules
 
 moduleAsHtml :: HtmlRenderContext -> Module -> (P.ModuleName, HtmlOutputModule Html)
@@ -111,40 +111,40 @@ moduleAsHtml r Module{..} = (modName, HtmlOutputModule modHtml reexports)
   reexports =
     map (second (foldMap renderDecl)) modReExports
 
-renderIndex :: LinksContext -> [(Maybe Char, Html)]
-renderIndex LinksContext{..} = go ctxBookmarks
-  where
-  go = takeLocals
-     >>> groupIndex getIndex renderEntry
-     >>> map (second (ul . mconcat))
-
-  getIndex (_, title_) = do
-    c <- textHeadMay title_
-    guard (toUpper c `elem` ['A'..'Z'])
-    pure c
-
-  textHeadMay t =
-    case T.length t of
-      0 -> Nothing
-      _ -> Just (T.index t 0)
-
-  renderEntry (mn, title_) =
-    li $ do
-      let url = T.pack (filePathFor mn `relativeTo` "index") <> "#" <> title_
-      code $
-        a ! A.href (v url) $ text title_
-      sp
-      text ("(" <> P.runModuleName mn <> ")")
-
-  groupIndex :: Ord i => (a -> Maybe i) -> (a -> b) -> [a] -> [(Maybe i, [b])]
-  groupIndex f g =
-    map (second DList.toList) . M.toList . foldr go' M.empty . sortBy (comparing f)
-    where
-    go' x = insertOrAppend (f x) (g x)
-    insertOrAppend idx val m =
-      let cur = M.findWithDefault DList.empty idx m
-          new = DList.snoc cur val
-      in  M.insert idx new m
+-- renderIndex :: LinksContext -> [(Maybe Char, Html)]
+-- renderIndex LinksContext{..} = go ctxBookmarks
+--   where
+--   go = takeLocals
+--      >>> groupIndex getIndex renderEntry
+--      >>> map (second (ul . mconcat))
+-- 
+--   getIndex (_, title_) = do
+--     c <- textHeadMay title_
+--     guard (toUpper c `elem` ['A'..'Z'])
+--     pure c
+-- 
+--   textHeadMay t =
+--     case T.length t of
+--       0 -> Nothing
+--       _ -> Just (T.index t 0)
+-- 
+--   renderEntry (mn, title_) =
+--     li $ do
+--       let url = T.pack (filePathFor mn `relativeTo` "index") <> "#" <> title_
+--       code $
+--         a ! A.href (v url) $ text title_
+--       sp
+--       text ("(" <> P.runModuleName mn <> ")")
+-- 
+--   groupIndex :: Ord i => (a -> Maybe i) -> (a -> b) -> [a] -> [(Maybe i, [b])]
+--   groupIndex f g =
+--     map (second DList.toList) . M.toList . foldr go' M.empty . sortBy (comparing f)
+--     where
+--     go' x = insertOrAppend (f x) (g x)
+--     insertOrAppend idx val m =
+--       let cur = M.findWithDefault DList.empty idx m
+--           new = DList.snoc cur val
+--       in  M.insert idx new m
 
 declAsHtml :: HtmlRenderContext -> Declaration -> Html
 declAsHtml r d@Declaration{..} = do

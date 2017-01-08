@@ -5,8 +5,9 @@ import Prelude
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Control.DeepSeq (NFData)
-import Data.List (find)
 import Data.Char (isUpper)
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Version
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -17,11 +18,10 @@ import Web.Bower.PackageMeta hiding (Version)
 import qualified Language.PureScript as P
 
 import Language.PureScript.Docs.Types
-import Language.PureScript.Docs.RenderedCode hiding (sp)
 
 data LinksContext = LinksContext
   { ctxGithub               :: (GithubUser, GithubRepo)
-  , ctxBookmarks            :: [Bookmark]
+  , ctxModuleMap            :: Map P.ModuleName PackageName
   , ctxResolvedDependencies :: [(PackageName, Version)]
   , ctxPackageName          :: PackageName
   , ctxVersion              :: Version
@@ -81,19 +81,14 @@ getLink LinksContext{..} curMn target containingMod = do
   getLinkLocation = normalLinkLocation <|> builtinLinkLocation
 
   normalLinkLocation = do
-    let bookmark' = (fromContainingModule curMn containingMod, target)
-    bookmark <- find ((bookmark' ==) . ignorePackage) ctxBookmarks
-    getLocation containingMod bookmark
-
-  getLocation containingModule bookmark =
-    case containingModule of
+    case containingMod of
       ThisModule ->
         return SameModule
       OtherModule destMn ->
-        case bookmark of
-          Local _ ->
+        case Map.lookup destMn ctxModuleMap of
+          Nothing ->
             return $ LocalModule curMn destMn
-          FromDep pkgName _ -> do
+          Just pkgName -> do
             pkgVersion <- lookup pkgName ctxResolvedDependencies
             return $ DepsModule curMn pkgName pkgVersion destMn
 
@@ -116,7 +111,7 @@ getLinksContext :: Package a -> LinksContext
 getLinksContext Package{..} =
   LinksContext
     { ctxGithub               = pkgGithub
-    , ctxBookmarks            = pkgBookmarks
+    , ctxModuleMap            = pkgModuleMap
     , ctxResolvedDependencies = pkgResolvedDependencies
     , ctxPackageName          = bowerName pkgMeta
     , ctxVersion              = pkgVersion
