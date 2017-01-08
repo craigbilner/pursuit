@@ -24,7 +24,7 @@ import Prelude
 import Control.Arrow (second)
 import Control.Category ((>>>))
 import Control.Monad (unless, guard)
-import Data.Char (toUpper)
+import Data.Char (toUpper, isUpper)
 import Data.Ord (comparing)
 import Data.Monoid ((<>))
 import Data.Foldable (for_)
@@ -54,15 +54,7 @@ import Model.DocLinks
 import qualified XMLArrows
 
 declNamespace :: Declaration -> Namespace
-declNamespace decl = case declInfo decl of
-  ValueDeclaration{}       -> ValueNS
-  -- TODO: This could be a type alias too.
-  AliasDeclaration{}       -> ValueNS
-  DataDeclaration{}        -> TypeNS
-  ExternDataDeclaration{}  -> TypeNS
-  TypeSynonymDeclaration{} -> TypeNS
-  TypeClassDeclaration{}   -> TypeNS
-  ExternKindDeclaration{}  -> KindNS
+declNamespace = declInfoNamespace . declInfo
 
 data HtmlOutput a = HtmlOutput
   { htmlIndex     :: [(Maybe Char, a)]
@@ -78,7 +70,7 @@ data HtmlOutputModule a = HtmlOutputModule
 
 data HtmlRenderContext = HtmlRenderContext
   { currentModuleName :: P.ModuleName
-  , buildDocLink :: Text -> ContainingModule -> Maybe DocLink
+  , buildDocLink :: Namespace -> Text -> ContainingModule -> Maybe DocLink
   , renderDocLink :: DocLink -> Text
   , renderSourceLink :: P.SourceSpan -> Text
   }
@@ -88,7 +80,7 @@ data HtmlRenderContext = HtmlRenderContext
 nullRenderContext :: P.ModuleName -> HtmlRenderContext
 nullRenderContext mn = HtmlRenderContext
   { currentModuleName = mn
-  , buildDocLink = const (const Nothing)
+  , buildDocLink = const (const (const Nothing))
   , renderDocLink = const ""
   , renderSourceLink = const ""
   }
@@ -148,7 +140,7 @@ renderIndex LinksContext{..} = go ctxBookmarks
 
 declAsHtml :: HtmlRenderContext -> Declaration -> Html
 declAsHtml r d@Declaration{..} = do
-  let declFragment = makeFragment (declNamespace d) declTitle
+  let declFragment = makeFragment (declInfoNamespace declInfo) declTitle
   H.div ! A.class_ "decl" ! A.id (v (T.drop 1 declFragment)) $ do
     h3 ! A.class_ "decl__title clearfix" $ do
       a ! A.class_ "decl__anchor" ! A.href (v declFragment) $ "#"
@@ -189,14 +181,8 @@ renderChildren _ [] = return ()
 renderChildren r xs = ul $ mapM_ go xs
   where
   go decl = item decl . code . codeAsHtml r . Render.renderChildDeclaration $ decl
-  item decl = let fragment = makeFragment (cdeclNamespace decl) (cdeclTitle decl)
+  item decl = let fragment = makeFragment (childDeclInfoNamespace (cdeclInfo decl)) (cdeclTitle decl)
               in  li ! A.id (v (T.drop 1 fragment))
-
-cdeclNamespace :: ChildDeclaration -> Namespace
-cdeclNamespace decl = case cdeclInfo decl of
-  ChildInstance{}        -> ValueNS
-  ChildDataConstructor{} -> ValueNS
-  ChildTypeClassMember{} -> ValueNS
 
 codeAsHtml :: HtmlRenderContext -> RenderedCode -> Html
 codeAsHtml r = outputWith elemAsHtml
@@ -204,18 +190,27 @@ codeAsHtml r = outputWith elemAsHtml
   elemAsHtml e = case e of
     Syntax x ->
       withClass "syntax" (text x)
-    Ident x mn ->
-      linkToDecl x mn (withClass "ident" (text x))
-    Ctor x mn ->
-      linkToDecl x mn (withClass "ctor" (text x))
-    Kind x ->
-      text x
     Keyword x ->
       withClass "keyword" (text x)
     Space ->
       text " "
+    Symbol ns name link ->
+      case link of
+        Link mn ->
+          let
+            class_ = if startsWithUpper name then "ctor" else "ident"
+          in
+            linkToDecl ns name mn (withClass class_ (text name))
+        NoLink ->
+          text name
 
   linkToDecl = linkToDeclaration r
+
+  startsWithUpper :: Text -> Bool
+  startsWithUpper str =
+    if T.null str
+      then False
+      else isUpper (T.index str 0)
 
 renderLink :: HtmlRenderContext -> DocLink -> Html -> Html
 renderLink r link_@DocLink{..} =
@@ -234,9 +229,9 @@ makeFragment :: Namespace -> Text -> Text
 makeFragment ns = (prefix <>) . escape
   where
   prefix = case ns of
-    TypeNS -> "#t:"
-    ValueNS -> "#v:"
-    KindNS -> "#k:"
+    TypeLevel -> "#t:"
+    ValueLevel -> "#v:"
+    KindLevel -> "#k:"
 
   -- TODO
   escape = id
@@ -244,13 +239,15 @@ makeFragment ns = (prefix <>) . escape
 fragmentFor :: DocLink -> Text
 fragmentFor l = makeFragment (linkNamespace l) (linkTitle l)
 
-linkToDeclaration :: HtmlRenderContext ->
-                     Text ->
-                     ContainingModule ->
-                     Html ->
-                     Html
-linkToDeclaration r target containMn =
-  maybe id (renderLink r) (buildDocLink r target containMn)
+linkToDeclaration ::
+  HtmlRenderContext ->
+  Namespace ->
+  Text ->
+  ContainingModule ->
+  Html ->
+  Html
+linkToDeclaration r ns target containMn =
+  maybe id (renderLink r) (buildDocLink r ns target containMn)
 
 renderAlias :: P.Fixity -> FixityAlias -> Html
 renderAlias (P.Fixity associativity precedence) alias =

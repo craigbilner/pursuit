@@ -4,6 +4,7 @@ flags:
     dev: true
 packages:
 - '.'
+- ../purescript
 extra-deps:
 - barrier-0.1.1
 - purescript-0.10.5
