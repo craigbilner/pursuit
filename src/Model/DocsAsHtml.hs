@@ -23,17 +23,12 @@ module Model.DocsAsHtml (
 import Prelude
 import Control.Arrow (second)
 import Control.Category ((>>>))
-import Control.Monad (unless, guard)
-import Data.Char (toUpper)
-import Data.Ord (comparing)
+import Control.Monad (unless)
+import Data.Char (isUpper)
 import Data.Monoid ((<>))
 import Data.Foldable (for_)
-import Data.List (intercalate, sortBy)
-import qualified Data.DList as DList
-import Data.List.Split (splitOn)
 import Data.Default (def)
 import Data.String (fromString)
-import qualified Data.Map as M
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -41,8 +36,6 @@ import qualified Data.Text as T
 import Text.Blaze.Html5 as H hiding (map)
 import qualified Text.Blaze.Html5.Attributes as A
 import qualified Cheapskate
-
-import System.FilePath ((</>))
 
 import qualified Language.PureScript as P
 
@@ -54,15 +47,7 @@ import Model.DocLinks
 import qualified XMLArrows
 
 declNamespace :: Declaration -> Namespace
-declNamespace decl = case declInfo decl of
-  ValueDeclaration{}       -> ValueNS
-  -- TODO: This could be a type alias too.
-  AliasDeclaration{}       -> ValueNS
-  DataDeclaration{}        -> TypeNS
-  ExternDataDeclaration{}  -> TypeNS
-  TypeSynonymDeclaration{} -> TypeNS
-  TypeClassDeclaration{}   -> TypeNS
-  ExternKindDeclaration{}  -> KindNS
+declNamespace = declInfoNamespace . declInfo
 
 data HtmlOutput a = HtmlOutput
   { htmlIndex     :: [(Maybe Char, a)]
@@ -78,7 +63,7 @@ data HtmlOutputModule a = HtmlOutputModule
 
 data HtmlRenderContext = HtmlRenderContext
   { currentModuleName :: P.ModuleName
-  , buildDocLink :: Text -> ContainingModule -> Maybe DocLink
+  , buildDocLink :: Namespace -> Text -> ContainingModule -> Maybe DocLink
   , renderDocLink :: DocLink -> Text
   , renderSourceLink :: P.SourceSpan -> Text
   }
@@ -88,17 +73,16 @@ data HtmlRenderContext = HtmlRenderContext
 nullRenderContext :: P.ModuleName -> HtmlRenderContext
 nullRenderContext mn = HtmlRenderContext
   { currentModuleName = mn
-  , buildDocLink = const (const Nothing)
+  , buildDocLink = const (const (const Nothing))
   , renderDocLink = const ""
   , renderSourceLink = const ""
   }
 
 packageAsHtml :: (P.ModuleName -> HtmlRenderContext) -> Package a -> HtmlOutput Html
-packageAsHtml getHtmlCtx pkg@Package{..} =
+packageAsHtml getHtmlCtx Package{..} =
   HtmlOutput indexFile modules
   where
-  linksCtx = getLinksContext pkg
-  indexFile = [] -- renderIndex linksCtx
+  indexFile = []
   modules = map (\m -> moduleAsHtml (getHtmlCtx (modName m)) m) pkgModules
 
 moduleAsHtml :: HtmlRenderContext -> Module -> (P.ModuleName, HtmlOutputModule Html)
@@ -148,7 +132,7 @@ moduleAsHtml r Module{..} = (modName, HtmlOutputModule modHtml reexports)
 
 declAsHtml :: HtmlRenderContext -> Declaration -> Html
 declAsHtml r d@Declaration{..} = do
-  let declFragment = makeFragment (declNamespace d) declTitle
+  let declFragment = makeFragment (declInfoNamespace declInfo) declTitle
   H.div ! A.class_ "decl" ! A.id (v (T.drop 1 declFragment)) $ do
     h3 ! A.class_ "decl__title clearfix" $ do
       a ! A.class_ "decl__anchor" ! A.href (v declFragment) $ "#"
@@ -157,8 +141,8 @@ declAsHtml r d@Declaration{..} = do
 
     H.div ! A.class_ "decl__body" $ do
       case declInfo of
-        AliasDeclaration fixity alias ->
-          renderAlias fixity alias
+        AliasDeclaration fixity alias_ ->
+          renderAlias fixity alias_
         _ ->
           pre ! A.class_ "decl__signature" $ code $
             codeAsHtml r (Render.renderDeclaration d)
@@ -189,14 +173,8 @@ renderChildren _ [] = return ()
 renderChildren r xs = ul $ mapM_ go xs
   where
   go decl = item decl . code . codeAsHtml r . Render.renderChildDeclaration $ decl
-  item decl = let fragment = makeFragment (cdeclNamespace decl) (cdeclTitle decl)
+  item decl = let fragment = makeFragment (childDeclInfoNamespace (cdeclInfo decl)) (cdeclTitle decl)
               in  li ! A.id (v (T.drop 1 fragment))
-
-cdeclNamespace :: ChildDeclaration -> Namespace
-cdeclNamespace decl = case cdeclInfo decl of
-  ChildInstance{}        -> ValueNS
-  ChildDataConstructor{} -> ValueNS
-  ChildTypeClassMember{} -> ValueNS
 
 codeAsHtml :: HtmlRenderContext -> RenderedCode -> Html
 codeAsHtml r = outputWith elemAsHtml
@@ -204,18 +182,27 @@ codeAsHtml r = outputWith elemAsHtml
   elemAsHtml e = case e of
     Syntax x ->
       withClass "syntax" (text x)
-    Ident x mn ->
-      linkToDecl x mn (withClass "ident" (text x))
-    Ctor x mn ->
-      linkToDecl x mn (withClass "ctor" (text x))
-    Kind x ->
-      text x
     Keyword x ->
       withClass "keyword" (text x)
     Space ->
       text " "
+    Symbol ns name link_ ->
+      case link_ of
+        Link mn ->
+          let
+            class_ = if startsWithUpper name then "ctor" else "ident"
+          in
+            linkToDecl ns name mn (withClass class_ (text name))
+        NoLink ->
+          text name
 
   linkToDecl = linkToDeclaration r
+
+  startsWithUpper :: Text -> Bool
+  startsWithUpper str =
+    if T.null str
+      then False
+      else isUpper (T.index str 0)
 
 renderLink :: HtmlRenderContext -> DocLink -> Html -> Html
 renderLink r link_@DocLink{..} =
@@ -234,9 +221,9 @@ makeFragment :: Namespace -> Text -> Text
 makeFragment ns = (prefix <>) . escape
   where
   prefix = case ns of
-    TypeNS -> "#t:"
-    ValueNS -> "#v:"
-    KindNS -> "#k:"
+    TypeLevel -> "#t:"
+    ValueLevel -> "#v:"
+    KindLevel -> "#k:"
 
   -- TODO
   escape = id
@@ -244,19 +231,21 @@ makeFragment ns = (prefix <>) . escape
 fragmentFor :: DocLink -> Text
 fragmentFor l = makeFragment (linkNamespace l) (linkTitle l)
 
-linkToDeclaration :: HtmlRenderContext ->
-                     Text ->
-                     ContainingModule ->
-                     Html ->
-                     Html
-linkToDeclaration r target containMn =
-  maybe id (renderLink r) (buildDocLink r target containMn)
+linkToDeclaration ::
+  HtmlRenderContext ->
+  Namespace ->
+  Text ->
+  ContainingModule ->
+  Html ->
+  Html
+linkToDeclaration r ns target containMn =
+  maybe id (renderLink r) (buildDocLink r ns target containMn)
 
 renderAlias :: P.Fixity -> FixityAlias -> Html
-renderAlias (P.Fixity associativity precedence) alias =
+renderAlias (P.Fixity associativity precedence) alias_ =
   p $ do
     -- TODO: Render a link
-    toHtml $ "Operator alias for " <> P.showQualified showAliasName alias <> " "
+    toHtml $ "Operator alias for " <> P.showQualified showAliasName alias_ <> " "
     em $
       text ("(" <> associativityStr <> " / precedence " <> T.pack (show precedence) <> ")")
   where
@@ -281,29 +270,6 @@ renderComments =
   -- We need to wrap it in a div because of how XMLArrows work
   >>> H.div
   >>> XMLArrows.run XMLArrows.replaceRelativeLinks
-
--- | if `to` and `from` are both files in the current package, generate a
--- FilePath for `to` relative to `from`.
---
--- TODO: Remove this
-relativeTo :: FilePath -> FilePath -> FilePath
-relativeTo to from = go (splitOn "/" to) (splitOn "/" from)
-  where
-  go (x : xs) (y : ys) | x == y = go xs ys
-  go xs ys = intercalate "/" $ replicate (length ys - 1) ".." ++ xs
-
--- | Generate a FilePath for module documentation for a module in the current
--- package.
---
--- TODO: Remove this
-filePathFor :: P.ModuleName -> FilePath
-filePathFor (P.ModuleName parts) = go parts
-  where
-  go [] = "index.html"
-  go (x : xs) = show x </> go xs
-
-sp :: Html
-sp = text " "
 
 v :: Text -> AttributeValue
 v = toValue
